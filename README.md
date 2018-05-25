@@ -1,5 +1,6 @@
-# Connecting 
+# Connecting Supervised and Unsupervised Sentence Embeddings
 
+This repository contains the implementation of the paper "Connecting Supervised and Unsupervised Sentence Embeddings" presented at he 3rd Workshop on Representation Learning for NLP (rep4NLP) held in conjuction with ACL 2018. 
 
 # InferSent
 
