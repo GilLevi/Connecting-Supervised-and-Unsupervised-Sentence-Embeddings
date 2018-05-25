@@ -20,44 +20,41 @@ import torch.nn as nn
 BLSTM (max/mean) encoder
 """
 
-class BLSTMEncoder(nn.Module):
+class BLSTMEncoderReg(nn.Module):
 
     def __init__(self, config):
-        super(BLSTMEncoder, self).__init__()
+        super(BLSTMEncoderReg, self).__init__()
         self.bsize = config['bsize']
-        self.word_emb_dim = config['word_emb_dim']
+        self.word_emb_dim =  config['word_emb_dim']
         self.enc_lstm_dim = config['enc_lstm_dim']
         self.pool_type = config['pool_type']
         self.dpout_model = config['dpout_model']
+        self.use_cuda = config['use_cuda']
 
         self.enc_lstm = nn.LSTM(self.word_emb_dim, self.enc_lstm_dim, 1,
                                 bidirectional=True, dropout=self.dpout_model)
-
-    def is_cuda(self):
-        # either all weights are on cpu or they are on gpu
-        return 'cuda' in str(type(self.enc_lstm.bias_hh_l0.data))
+	self.decoder = nn.Linear(2*self.enc_lstm_dim, self.word_emb_dim)
 
     def forward(self, sent_tuple):
-        # sent_len: [max_len, ..., min_len] (bsize)
-        # sent: Variable(seqlen x bsize x worddim)
+        # sent_len: [max_len, ..., min_len] (batch)
+        # sent: Variable(seqlen x batch x worddim)
+
         sent, sent_len = sent_tuple
 
         # Sort by length (keep idx)
         sent_len, idx_sort = np.sort(sent_len)[::-1], np.argsort(-sent_len)
         idx_unsort = np.argsort(idx_sort)
 
-        idx_sort = torch.from_numpy(idx_sort).cuda() if self.is_cuda() \
-            else torch.from_numpy(idx_sort)
+        idx_sort = torch.from_numpy(idx_sort).cuda() if self.use_cuda else torch.from_numpy(idx_sort)
         sent = sent.index_select(1, Variable(idx_sort))
 
         # Handling padding in Recurrent Networks
         sent_packed = nn.utils.rnn.pack_padded_sequence(sent, sent_len)
-        sent_output = self.enc_lstm(sent_packed)[0]  # seqlen x batch x 2*nhid
+        sent_output = self.enc_lstm(sent_packed)[0] #seqlen x batch x 2*nhid
         sent_output = nn.utils.rnn.pad_packed_sequence(sent_output)[0]
 
         # Un-sort by length
-        idx_unsort = torch.from_numpy(idx_unsort).cuda() if self.is_cuda() \
-            else torch.from_numpy(idx_unsort)
+        idx_unsort = torch.from_numpy(idx_unsort).cuda() if self.use_cuda else torch.from_numpy(idx_unsort)
         sent_output = sent_output.index_select(1, Variable(idx_unsort))
 
         # Pooling
@@ -66,10 +63,57 @@ class BLSTMEncoder(nn.Module):
             emb = torch.sum(sent_output, 0).squeeze(0)
             emb = emb / sent_len.expand_as(emb)
         elif self.pool_type == "max":
-            emb = torch.max(sent_output, 0)[0]
-            if emb.ndimension() == 3:
-                emb = emb.squeeze(0)
-                assert emb.ndimension() == 2
+            emb = torch.max(sent_output, 0)[0].squeeze(0)
+	
+	decoded_sent_output = self.decoder(sent_output.view(sent_output.size(0)*sent_output.size(1), sent_output.size(2)))
+
+        return emb, decoded_sent_output
+
+
+
+class BLSTMEncoder(nn.Module):
+
+    def __init__(self, config):
+        super(BLSTMEncoder, self).__init__()
+        self.bsize = config['bsize']
+        self.word_emb_dim =  config['word_emb_dim']
+        self.enc_lstm_dim = config['enc_lstm_dim']
+        self.pool_type = config['pool_type']
+        self.dpout_model = config['dpout_model']
+        self.use_cuda = config['use_cuda']
+
+        self.enc_lstm = nn.LSTM(self.word_emb_dim, self.enc_lstm_dim, 1,
+                                bidirectional=True, dropout=self.dpout_model)
+	
+    def forward(self, sent_tuple):
+        # sent_len: [max_len, ..., min_len] (batch)
+        # sent: Variable(seqlen x batch x worddim)
+
+        sent, sent_len = sent_tuple
+
+        # Sort by length (keep idx)
+        sent_len, idx_sort = np.sort(sent_len)[::-1], np.argsort(-sent_len)
+        idx_unsort = np.argsort(idx_sort)
+
+        idx_sort = torch.from_numpy(idx_sort).cuda() if self.use_cuda else torch.from_numpy(idx_sort)
+        sent = sent.index_select(1, Variable(idx_sort))
+
+        # Handling padding in Recurrent Networks
+        sent_packed = nn.utils.rnn.pack_padded_sequence(sent, sent_len)
+        sent_output = self.enc_lstm(sent_packed)[0] #seqlen x batch x 2*nhid
+        sent_output = nn.utils.rnn.pad_packed_sequence(sent_output)[0]
+
+        # Un-sort by length
+        idx_unsort = torch.from_numpy(idx_unsort).cuda() if self.use_cuda else torch.from_numpy(idx_unsort)
+        sent_output = sent_output.index_select(1, Variable(idx_unsort))
+
+        # Pooling
+        if self.pool_type == "mean":
+            sent_len = Variable(torch.FloatTensor(sent_len)).unsqueeze(1).cuda()
+            emb = torch.sum(sent_output, 0).squeeze(0)
+            emb = emb / sent_len.expand_as(emb)
+        elif self.pool_type == "max":
+            emb = torch.max(sent_output, 0)[0].squeeze(0)
 
         return emb
 
@@ -82,7 +126,7 @@ class BLSTMEncoder(nn.Module):
         if tokenize:
             from nltk.tokenize import word_tokenize
         sentences = [s.split() if not tokenize else word_tokenize(s)
-                     for s in sentences]
+            for s in sentences]
         for sent in sentences:
             for word in sent:
                 if word not in word_dict:
@@ -93,7 +137,7 @@ class BLSTMEncoder(nn.Module):
 
     def get_glove(self, word_dict):
         assert hasattr(self, 'glove_path'), \
-               'warning : you need to set_glove_path(glove_path)'
+            'warning : you need to set_glove_path(glove_path)'
         # create word_vec with glove vectors
         word_vec = {}
         with open(self.glove_path) as f:
@@ -102,12 +146,12 @@ class BLSTMEncoder(nn.Module):
                 if word in word_dict:
                     word_vec[word] = np.fromstring(vec, sep=' ')
         print('Found {0}(/{1}) words with glove vectors'.format(
-                    len(word_vec), len(word_dict)))
+            len(word_vec), len(word_dict)))
         return word_vec
 
     def get_glove_k(self, K):
-        assert hasattr(self, 'glove_path'), 'warning : you need \
-                                             to set_glove_path(glove_path)'
+        assert hasattr(self, 'glove_path'), 'warning : you need to \
+                                             set_glove_path(glove_path)'
         # create word_vec with k first glove vectors
         k = 0
         word_vec = {}
@@ -126,22 +170,22 @@ class BLSTMEncoder(nn.Module):
         return word_vec
 
     def build_vocab(self, sentences, tokenize=True):
-        assert hasattr(self, 'glove_path'), 'warning : you need \
-                                             to set_glove_path(glove_path)'
+        assert hasattr(self, 'glove_path'), 'warning : you need to \
+                                             set_glove_path(glove_path)'
         word_dict = self.get_word_dict(sentences, tokenize)
         self.word_vec = self.get_glove(word_dict)
         print('Vocab size : {0}'.format(len(self.word_vec)))
 
     # build GloVe vocab with k most frequent words
     def build_vocab_k_words(self, K):
-        assert hasattr(self, 'glove_path'), 'warning : you need \
-                                             to set_glove_path(glove_path)'
+        assert hasattr(self, 'glove_path'), 'warning : you need to \
+                                             set_glove_path(glove_path)'
         self.word_vec = self.get_glove_k(K)
         print('Vocab size : {0}'.format(K))
 
     def update_vocab(self, sentences, tokenize=True):
-        assert hasattr(self, 'glove_path'), 'warning : you need \
-                                             to set_glove_path(glove_path)'
+        assert hasattr(self, 'glove_path'), 'warning : you need to \
+                                             set_glove_path(glove_path)'
         assert hasattr(self, 'word_vec'), 'build_vocab before updating it'
         word_dict = self.get_word_dict(sentences, tokenize)
 
@@ -155,11 +199,11 @@ class BLSTMEncoder(nn.Module):
             new_word_vec = self.get_glove(word_dict)
             self.word_vec.update(new_word_vec)
         print('New vocab size : {0} (added {1} words)'.format(
-                        len(self.word_vec), len(new_word_vec)))
+            len(self.word_vec), len(new_word_vec)))
 
     def get_batch(self, batch):
         # sent in batch in decreasing order of lengths
-        # batch: (bsize, max_len, word_dim)
+        # (bsize, max_len, word_dim)
         embed = np.zeros((len(batch[0]), len(batch), self.word_emb_dim))
 
         for i in range(len(batch)):
@@ -168,7 +212,8 @@ class BLSTMEncoder(nn.Module):
 
         return torch.FloatTensor(embed)
 
-    def prepare_samples(self, sentences, bsize, tokenize, verbose):
+    def encode(self, sentences, bsize=64, tokenize=True, verbose=False):
+        tic = time.time()
         if tokenize:
             from nltk.tokenize import word_tokenize
         sentences = [['<s>'] + s.split() + ['</s>'] if not tokenize else
@@ -181,7 +226,7 @@ class BLSTMEncoder(nn.Module):
             if not s_f:
                 import warnings
                 warnings.warn('No words in "{0}" (idx={1}) have glove vectors. \
-                               Replacing by "</s>"..'.format(sentences[i], i))
+                    Replacing by "</s>"..'.format(sentences[i], i))
                 s_f = ['</s>']
             sentences[i] = s_f
 
@@ -189,27 +234,19 @@ class BLSTMEncoder(nn.Module):
         n_wk = np.sum(lengths)
         if verbose:
             print('Nb words kept : {0}/{1} ({2} %)'.format(
-                        n_wk, n_w, round((100.0 * n_wk) / n_w, 2)))
+                n_wk, n_w, round((100.0 * n_wk) / n_w, 2)))
 
         # sort by decreasing length
         lengths, idx_sort = np.sort(lengths)[::-1], np.argsort(-lengths)
         sentences = np.array(sentences)[idx_sort]
 
-        return sentences, lengths, idx_sort
-
-    def encode(self, sentences, bsize=64, tokenize=True, verbose=False):
-        tic = time.time()
-        sentences, lengths, idx_sort = self.prepare_samples(
-                        sentences, bsize, tokenize, verbose)
-
         embeddings = []
         for stidx in range(0, len(sentences), bsize):
-            batch = Variable(self.get_batch(
-                        sentences[stidx:stidx + bsize]), volatile=True)
-            if self.is_cuda():
+            batch = Variable(self.get_batch(sentences[stidx:stidx + bsize]),
+                             volatile=True)
+            if self.use_cuda:
                 batch = batch.cuda()
-            batch = self.forward(
-                (batch, lengths[stidx:stidx + bsize])).data.cpu().numpy()
+            batch = self.forward((batch, lengths[stidx:stidx + bsize])).data.cpu().numpy()
             embeddings.append(batch)
         embeddings = np.vstack(embeddings)
 
@@ -219,8 +256,8 @@ class BLSTMEncoder(nn.Module):
 
         if verbose:
             print('Speed : {0} sentences/s ({1} mode, bsize={2})'.format(
-                    round(len(embeddings)/(time.time()-tic), 2),
-                    'gpu' if self.is_cuda() else 'cpu', bsize))
+                round(len(embeddings)/(time.time()-tic), 2),
+                'gpu' if self.use_cuda else 'cpu', bsize))
         return embeddings
 
     def visualize(self, sent, tokenize=True):
@@ -233,11 +270,11 @@ class BLSTMEncoder(nn.Module):
 
         if ' '.join(sent[0]) == '<s> </s>':
             import warnings
-            warnings.warn('No words in "{0}" have glove vectors. Replacing \
-                           by "<s> </s>"..'.format(sent))
+            warnings.warn('No words in "{0}" have glove vectors. \
+                           Replacing by "<s> </s>"..'.format(sent))
         batch = Variable(self.get_batch(sent), volatile=True)
 
-        if self.is_cuda():
+        if self.use_cuda:
             batch = batch.cuda()
         output = self.enc_lstm(batch)[0]
         output, idxs = torch.max(output, 0)
@@ -256,6 +293,7 @@ class BLSTMEncoder(nn.Module):
         plt.show()
 
         return output, idxs
+
 
 """
 BiGRU encoder (first/last hidden states)
@@ -753,16 +791,16 @@ class ConvNetEncoder(nn.Module):
         # batch, nhid, seqlen)
 
         sent = self.convnet1(sent)
-        u1 = torch.max(sent, 2)[0]
+        u1 = torch.max(sent, 2)[0].squeeze(2)
 
         sent = self.convnet2(sent)
-        u2 = torch.max(sent, 2)[0]
+        u2 = torch.max(sent, 2)[0].squeeze(2)
 
         sent = self.convnet3(sent)
-        u3 = torch.max(sent, 2)[0]
+        u3 = torch.max(sent, 2)[0].squeeze(2)
 
         sent = self.convnet4(sent)
-        u4 = torch.max(sent, 2)[0]
+        u4 = torch.max(sent, 2)[0].squeeze(2)
 
         emb = torch.cat((u1, u2, u3, u4), 1)
 
@@ -812,12 +850,12 @@ class NLINet(nn.Module):
 
     def forward(self, s1, s2):
         # s1 : (s1, s1_len)
-        u = self.encoder(s1)
-        v = self.encoder(s2)
+        u, u_encoding = self.encoder(s1)
+        v, v_encoding = self.encoder(s2)
 
         features = torch.cat((u, v, torch.abs(u-v), u*v), 1)
         output = self.classifier(features)
-        return output
+        return output, u_encoding, v_encoding
 
     def encode(self, s1):
         emb = self.encoder(s1)

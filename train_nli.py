@@ -44,7 +44,7 @@ parser.add_argument("--minlr", type=float, default=1e-5, help="minimum lr")
 parser.add_argument("--max_norm", type=float, default=5., help="max norm (grad clipping)")
 
 # model
-parser.add_argument("--encoder_type", type=str, default='BLSTMEncoder', help="see list of encoders")
+parser.add_argument("--encoder_type", type=str, default='BLSTMEncoderReg', help="see list of encoders")
 parser.add_argument("--enc_lstm_dim", type=int, default=2048, help="encoder nhid dimension")
 parser.add_argument("--n_enc_layers", type=int, default=1, help="encoder num layers")
 parser.add_argument("--fc_dim", type=int, default=512, help="nhid of fc layers")
@@ -52,8 +52,13 @@ parser.add_argument("--n_classes", type=int, default=3, help="entailment/neutral
 parser.add_argument("--pool_type", type=str, default='max', help="max or mean")
 
 # gpu
-parser.add_argument("--gpu_id", type=int, default=3, help="GPU ID")
+parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID")
 parser.add_argument("--seed", type=int, default=1234, help="seed")
+
+# regularization
+parser.add_argument("--regularization_type", type=str, default='lm', help="lm,  autoencoder or combined")
+parser.add_argument("--regularization_weight", type=float, default=0.5, help="weight given to the regularization loss term")
+parser.add_argument("--classification_weight", type=float, default=0.5, help="weight given to the standard classification loss term")
 
 
 params, _ = parser.parse_known_args()
@@ -112,7 +117,7 @@ config_nli_model = {
 }
 
 # model
-encoder_types = ['BLSTMEncoder', 'BLSTMprojEncoder', 'BGRUlastEncoder',
+encoder_types = ['BLSTMEncoderReg', 'BLSTMEncoder', 'BLSTMprojEncoder', 'BGRUlastEncoder',
                  'InnerAttentionMILAEncoder', 'InnerAttentionYANGEncoder',
                  'InnerAttentionNAACLEncoder', 'ConvNetEncoder', 'LSTMEncoder']
 assert params.encoder_type in encoder_types, "encoder_type must be in " + \
@@ -124,6 +129,7 @@ print(nli_net)
 weight = torch.FloatTensor(params.n_classes).fill_(1)
 loss_fn = nn.CrossEntropyLoss(weight=weight)
 loss_fn.size_average = False
+loss_fn_lm = nn.MSELoss()
 
 # optimizer
 optim_fn, optim_params = get_optimizer(params.optimizer)
@@ -132,7 +138,7 @@ optimizer = optim_fn(nli_net.parameters(), **optim_params)
 # cuda by default
 nli_net.cuda()
 loss_fn.cuda()
-
+loss_fn_lm.cuda()
 
 """
 TRAIN
@@ -147,6 +153,7 @@ def trainepoch(epoch):
     print('\nTRAINING : Epoch ' + str(epoch))
     nli_net.train()
     all_costs = []
+    all_costs_lm = []
     logs = []
     words_count = 0
 
@@ -175,7 +182,7 @@ def trainepoch(epoch):
         k = s1_batch.size(1)  # actual batch size
 
         # model forward
-        output = nli_net((s1_batch, s1_len), (s2_batch, s2_len))
+        output, sent1_output, sent2_output = nli_net((s1_batch, s1_len), (s2_batch, s2_len))
 
         pred = output.data.max(1)[1]
         correct += pred.long().eq(tgt_batch.data.long()).cpu().sum()
@@ -183,12 +190,38 @@ def trainepoch(epoch):
 
         # loss
         loss = loss_fn(output, tgt_batch)
+	
+	# regularization losses
+	sent2_output_t = sent2_output.view(-1,k,300)
+
+	loss_lm = 0.0
+	if params.regularization_type == 'autoencoder' or params.regularization_type == 'combined':
+	    for sent_ind in range(len(s2_len)):
+		cur_len = s2_len[sent_ind]
+		cur_sent = s2_batch[:cur_len, sent_ind,:]
+		cur_sent_pred = sent2_output_t[:cur_len, sent_ind,:]
+		loss_lm += loss_fn_lm(cur_sent_pred[:-1], cur_sent[1:])
+	
+	if params.regularization_type == 'lm' or params.regularization_type == 'combined':
+	    for sent_ind in range(len(s2_len)):
+		cur_len = s2_len[sent_ind]
+		cur_sent = s2_batch[:cur_len, sent_ind,:]
+		cur_sent_pred = sent2_output_t[:cur_len, sent_ind,:]
+		loss_lm += loss_fn_lm(cur_sent_pred[:-1], cur_sent[1:])
+	
+    	if params.regularization_type == 'combined':
+	    loss_lm *= 0.5
+
+
         all_costs.append(loss.data[0])
+        all_costs_lm.append(loss_lm.data[0])
+
         words_count += (s1_batch.nelement() + s2_batch.nelement()) / params.word_emb_dim
 
         # backward
         optimizer.zero_grad()
-        loss.backward()
+	total_loss =  params.classification_weight * loss  +  params.regularization_weight * loss_lm 
+        total_loss.backward()
 
         # gradient clipping (off by default)
         shrink_factor = 1
@@ -210,8 +243,8 @@ def trainepoch(epoch):
         optimizer.param_groups[0]['lr'] = current_lr
 
         if len(all_costs) == 100:
-            logs.append('{0} ; loss {1} ; sentence/s {2} ; words/s {3} ; accuracy train : {4}'.format(
-                            stidx, round(np.mean(all_costs), 2),
+            logs.append('{0} ; loss {1} ; reg loss {2} ; sentence/s {3} ; words/s {4} ; accuracy train : {5}'.format(
+                            stidx, round(np.mean(all_costs), 2), round(np.mean(all_costs_lm), 2),
                             int(len(all_costs) * params.batch_size / (time.time() - last_time)),
                             int(words_count * 1.0 / (time.time() - last_time)),
                             round(100.*correct/(stidx+k), 2)))
@@ -219,6 +252,8 @@ def trainepoch(epoch):
             last_time = time.time()
             words_count = 0
             all_costs = []
+            all_costs_lm = []
+
     train_acc = round(100 * correct/len(s1), 2)
     print('results : epoch {0} ; mean accuracy train : {1}'
           .format(epoch, train_acc))
@@ -301,4 +336,4 @@ evaluate(0, 'test', True)
 
 # Save encoder instead of full model
 torch.save(nli_net.encoder,
-           os.path.join(params.outputdir, params.outputmodelname + '.encoder'))
+           os.path.join(params.outputdir, params.outputmodelname))
