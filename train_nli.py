@@ -280,7 +280,7 @@ def evaluate(epoch, eval_type='valid', final_eval=False):
         tgt_batch = Variable(torch.LongTensor(target[i:i + params.batch_size])).cuda()
 
         # model forward
-        output = nli_net((s1_batch, s1_len), (s2_batch, s2_len))
+        output, _, _ = nli_net((s1_batch, s1_len), (s2_batch, s2_len))
 
         pred = output.data.max(1)[1]
         correct += pred.long().eq(tgt_batch.data.long()).cpu().sum()
