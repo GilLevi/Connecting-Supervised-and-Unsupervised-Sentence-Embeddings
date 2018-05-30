@@ -33,7 +33,7 @@ parser.add_argument("--outputmodelname", type=str, default='model.pickle')
 
 # training
 parser.add_argument("--n_epochs", type=int, default=20)
-parser.add_argument("--batch_size", type=int, default=64)
+parser.add_argument("--batch_size", type=int, default=15) #changed here to 15 from 64
 parser.add_argument("--dpout_model", type=float, default=0., help="encoder dropout")
 parser.add_argument("--dpout_fc", type=float, default=0., help="classifier dropout")
 parser.add_argument("--nonlinear_fc", type=float, default=0, help="use nonlinearity in fc")
@@ -56,9 +56,9 @@ parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID")
 parser.add_argument("--seed", type=int, default=1234, help="seed")
 
 # regularization
-parser.add_argument("--regularization_type", type=str, default='lm', help="lm,  autoencoder or combined")
-parser.add_argument("--regularization_weight", type=float, default=0.5, help="weight given to the regularization loss term")
-parser.add_argument("--classification_weight", type=float, default=0.5, help="weight given to the standard classification loss term")
+parser.add_argument("--regularization_type", type=str, default='lm', help="lm, ae, combined, bi-lm, bi-ae or bi-combined")
+parser.add_argument("--regularization_weight", type=float, default=1.0, help="weight given to the regularization loss term")
+parser.add_argument("--classification_weight", type=float, default=1.0, help="weight given to the standard classification loss term")
 
 
 params, _ = parser.parse_known_args()
@@ -117,7 +117,7 @@ config_nli_model = {
 }
 
 # model
-encoder_types = ['BLSTMEncoderReg', 'BLSTMEncoder', 'BLSTMprojEncoder', 'BGRUlastEncoder',
+encoder_types = ['BLSTMEncoderReg', 'BLSTMEncoderRegBi', 'BLSTMEncoder', 'BLSTMprojEncoder', 'BGRUlastEncoder',
                  'InnerAttentionMILAEncoder', 'InnerAttentionYANGEncoder',
                  'InnerAttentionNAACLEncoder', 'ConvNetEncoder', 'LSTMEncoder']
 assert params.encoder_type in encoder_types, "encoder_type must be in " + \
@@ -192,15 +192,20 @@ def trainepoch(epoch):
         loss = loss_fn(output, tgt_batch)
 	
 	# regularization losses
-	sent2_output_t = sent2_output.view(-1,k,300)
 
+	if params.regularization_type == 'ae' or params.regularization_type == 'lm' or params.regularization_type == 'combined':
+	    sent2_output_t = sent2_output.view(-1,k,300)
+	else:
+	    sent2_output_t = sent2_output.view(-1,k,600)
+	
 	loss_lm = 0.0
-	if params.regularization_type == 'autoencoder' or params.regularization_type == 'combined':
+
+	if params.regularization_type == 'ae' or params.regularization_type == 'combined':
 	    for sent_ind in range(len(s2_len)):
 		cur_len = s2_len[sent_ind]
 		cur_sent = s2_batch[:cur_len, sent_ind,:]
 		cur_sent_pred = sent2_output_t[:cur_len, sent_ind,:]
-		loss_lm += loss_fn_lm(cur_sent_pred[:-1], cur_sent[1:])
+		loss_lm += loss_fn_lm(cur_sent_pred, cur_sent)
 	
 	if params.regularization_type == 'lm' or params.regularization_type == 'combined':
 	    for sent_ind in range(len(s2_len)):
@@ -211,7 +216,31 @@ def trainepoch(epoch):
 	
     	if params.regularization_type == 'combined':
 	    loss_lm *= 0.5
+	
+	if params.regularization_type == 'bi-ae' or params.regularization_type == 'bi-combined':
+            for sent_ind in range(len(s2_len)):
+		cur_len = s2_len[sent_ind]
+		cur_sent = s2_batch[:cur_len, sent_ind,:]
+		cur_sent_pred = sent2_output_t[:cur_len, sent_ind,:]
 
+		loss_lm += loss_fn_lm(cur_sent_pred[:,:300], cur_sent)
+		loss_lm += loss_fn_lm(cur_sent_pred[:,300:], cur_sent)
+	    loss_lm *= 0.5
+
+	if params.regularization_type == 'bi-lm' or params.regularization_type == 'bi-combined':
+            for sent_ind in range(len(s2_len)):
+		cur_len = s2_len[sent_ind]
+		cur_sent = s2_batch[:cur_len, sent_ind,:]
+		cur_sent_reverse = Variable(torch.from_numpy(cur_sent.data.cpu().numpy()[::-1,:].copy())).cuda()
+		cur_sent_pred = sent2_output_t[:cur_len, sent_ind,:]
+
+		loss_lm += loss_fn_lm(cur_sent_pred[:-1,:300], cur_sent[1:])
+		loss_lm += loss_fn_lm(cur_sent_pred[1:,300:], cur_sent_reverse[:-1])
+	    loss_lm *= 0.5
+
+
+	if params.regularization_type == 'bi-combined':
+	    loss_lm *= 0.5
 
         all_costs.append(loss.data[0])
         all_costs_lm.append(loss_lm.data[0])

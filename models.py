@@ -69,6 +69,59 @@ class BLSTMEncoderReg(nn.Module):
 
         return emb, decoded_sent_output
 
+class BLSTMEncoderRegBi(nn.Module):
+
+    def __init__(self, config):
+        super(BLSTMEncoderRegBi, self).__init__()
+        self.bsize = config['bsize']
+        self.word_emb_dim =  config['word_emb_dim']
+        self.enc_lstm_dim = config['enc_lstm_dim']
+        self.pool_type = config['pool_type']
+        self.dpout_model = config['dpout_model']
+        self.use_cuda = config['use_cuda']
+
+        self.enc_lstm = nn.LSTM(self.word_emb_dim, self.enc_lstm_dim, 1,
+                                bidirectional=True, dropout=self.dpout_model)
+	self.decoder_left = nn.Linear(self.enc_lstm_dim, self.word_emb_dim)
+	self.decoder_right = nn.Linear(self.enc_lstm_dim, self.word_emb_dim)
+
+    def forward(self, sent_tuple):
+        # sent_len: [max_len, ..., min_len] (batch)
+        # sent: Variable(seqlen x batch x worddim)
+
+        sent, sent_len = sent_tuple
+
+        # Sort by length (keep idx)
+        sent_len, idx_sort = np.sort(sent_len)[::-1], np.argsort(-sent_len)
+        idx_unsort = np.argsort(idx_sort)
+
+        idx_sort = torch.from_numpy(idx_sort).cuda() if self.use_cuda else torch.from_numpy(idx_sort)
+        sent = sent.index_select(1, Variable(idx_sort))
+
+        # Handling padding in Recurrent Networks
+        sent_packed = nn.utils.rnn.pack_padded_sequence(sent, sent_len)
+        sent_output = self.enc_lstm(sent_packed)[0] #seqlen x batch x 2*nhid
+        sent_output = nn.utils.rnn.pad_packed_sequence(sent_output)[0]
+
+        # Un-sort by length
+        idx_unsort = torch.from_numpy(idx_unsort).cuda() if self.use_cuda else torch.from_numpy(idx_unsort)
+        sent_output = sent_output.index_select(1, Variable(idx_unsort))
+
+        # Pooling
+        if self.pool_type == "mean":
+            sent_len = Variable(torch.FloatTensor(sent_len)).unsqueeze(1).cuda()
+            emb = torch.sum(sent_output, 0).squeeze(0)
+            emb = emb / sent_len.expand_as(emb)
+        elif self.pool_type == "max":
+            emb = torch.max(sent_output, 0)[0].squeeze(0)
+	
+	decoded_sent_output1 = self.decoder_left(sent_output[:,:,:2048].contiguous().view(sent_output.size(0)*sent_output.size(1), sent_output.size(2)/2))
+        decoded_sent_output2 = self.decoder_right(sent_output[:,:,2048:].contiguous().view(sent_output.size(0)*sent_output.size(1), sent_output.size(2)/2))
+	decoded_sent_output = torch.cat((decoded_sent_output1, decoded_sent_output2), 1)
+
+        return emb, decoded_sent_output
+
+
 
 
 class BLSTMEncoder(nn.Module):
