@@ -26,14 +26,14 @@ GLOVE_PATH = "dataset/GloVe/glove.840B.300d.txt"
 
 parser = argparse.ArgumentParser(description='NLI training')
 # paths
-parser.add_argument("--nlipath", type=str, default='dataset/SNLI/', help="NLI data path (SNLI or MultiNLI)")
-parser.add_argument("--outputdir", type=str, default='savedir/', help="Output directory")
+parser.add_argument("--nlipath", type=str, default='dataset/AllNLI/', help="NLI data path (SNLI or MultiNLI)")
+parser.add_argument("--outputdir", type=str, default='savedir_allnli/', help="Output directory")
 parser.add_argument("--outputmodelname", type=str, default='model.pickle')
 
 
 # training
 parser.add_argument("--n_epochs", type=int, default=20)
-parser.add_argument("--batch_size", type=int, default=15) #changed here to 15 from 64
+parser.add_argument("--batch_size", type=int, default=15)
 parser.add_argument("--dpout_model", type=float, default=0., help="encoder dropout")
 parser.add_argument("--dpout_fc", type=float, default=0., help="classifier dropout")
 parser.add_argument("--nonlinear_fc", type=float, default=0, help="use nonlinearity in fc")
@@ -183,7 +183,6 @@ def trainepoch(epoch):
 
         # model forward
         output, sent1_output, sent2_output = nli_net((s1_batch, s1_len), (s2_batch, s2_len))
-
         pred = output.data.max(1)[1]
         correct += pred.long().eq(tgt_batch.data.long()).cpu().sum()
         assert len(pred) == len(s1[stidx:stidx + params.batch_size])
@@ -233,7 +232,6 @@ def trainepoch(epoch):
 		cur_sent = s2_batch[:cur_len, sent_ind,:]
 		cur_sent_reverse = Variable(torch.from_numpy(cur_sent.data.cpu().numpy()[::-1,:].copy())).cuda()
 		cur_sent_pred = sent2_output_t[:cur_len, sent_ind,:]
-
 		loss_lm += loss_fn_lm(cur_sent_pred[:-1,:300], cur_sent[1:])
 		loss_lm += loss_fn_lm(cur_sent_pred[1:,300:], cur_sent_reverse[:-1])
 	    loss_lm *= 0.5
