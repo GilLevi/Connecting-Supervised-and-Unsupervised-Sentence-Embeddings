@@ -5,5 +5,11 @@ This repository contains the implementation of the paper "Connecting Supervised 
 While (Conneau et al., 2017) uses only a supervised loss, we add to their framework additional unsupervised losses that act as regularization terms. We evaluate our results using [SentEval](https://github.com/facebookresearch/SentEval) and show improved results on various downstream tasks. 
 
 
+
+
+
+
+
+
 (Conneau et al., 2017) Alexis Conneau, Douwe Kiela, Holger Schwenk, Loı̈c Barrault, and Antoine Bordes. 2017. Supervised learning of universal sentence representations from natural language inference data. In Proceedings of the 2017 Conference on Empirical Methods in Natural Language Processing. pages 670–680.
 
